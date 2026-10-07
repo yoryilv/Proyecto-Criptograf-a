@@ -1,0 +1,31 @@
+# Entornos virtuales
+venv/
+.venv/
+env/
+
+# Bytecode de Python y caché
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pruebas y cobertura (pytest)
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editores e IDEs (VS Code, JetBrains)
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Datos locales y llaves criptográficas del proyecto
+storage/*
+!storage/.gitkeep
+*.pem
+*.key
+*.tmp
+*.pasa.tmp
+
+# Archivos de sistema (macOS)
+.DS_Store
