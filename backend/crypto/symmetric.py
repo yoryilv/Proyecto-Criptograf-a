@@ -149,11 +149,16 @@ def decrypt_stream(
     if _read_exact(src, 1):
         raise ValueError("trailing data after final chunk")
 
-
-master = AESGCM.generate_key(bit_length=256)  # store this once, per device pair
-
-with open("test.png", "rb") as f, open("test.png.enc", "wb") as out:
-    encrypt_stream(f, out, master)
-
-with open("test.png.enc", "rb") as f, open("test.out.png", "wb") as out:
-    decrypt_stream(f, out, master)
+if __name__ == "__main__":
+    # Solo se ejecuta si se corre el script directamente, nunca al correr el server
+    import io
+    dummy_data = b"Prueba de flujo seguro Pasa"
+    master = AESGCM.generate_key(bit_length=256)
+    
+    enc_out = io.BytesIO()
+    encrypt_stream(io.BytesIO(dummy_data), enc_out, master)
+    
+    dec_out = io.BytesIO()
+    decrypt_stream(io.BytesIO(enc_out.getvalue()), dec_out, master)
+    assert dec_out.getvalue() == dummy_data
+    print("Prueba LFSS completada con éxito.")
