@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Pasa — Receptor Seguro</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-[#0f172a] text-slate-100 min-h-screen flex flex-col items-center justify-center p-6 font-sans">
+
+  <!-- Contenedor Principal -->
+  <main class="w-full max-w-lg bg-[#1e293b] border border-slate-700/60 rounded-3xl p-8 shadow-2xl relative">
+    
+    <!-- Encabezado con estado -->
+    <header class="flex items-center justify-between pb-6 border-b border-slate-700/50">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-2xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-xl">
+          P
+        </div>
+        <div>
+          <h1 class="text-xl font-bold tracking-tight">Pasa AirDrop</h1>
+          <p class="text-xs text-slate-400">Receptor macOS (P-256 + AES-GCM)</p>
+        </div>
+      </div>
+      <div id="connBadge" class="flex items-center gap-2 px-3 py-1 bg-emerald-500/10 text-emerald-400 rounded-full text-xs font-semibold">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        En línea
+      </div>
+    </header>
+
+    <!-- Estado de espera (Animación Radar) -->
+    <section id="idleView" class="py-12 flex flex-col items-center text-center">
+      <div class="relative w-24 h-24 mb-6 flex items-center justify-center">
+        <div class="absolute inset-0 rounded-full bg-indigo-500/10 animate-ping"></div>
+        <div class="w-16 h-16 rounded-full bg-indigo-600/20 text-indigo-400 flex items-center justify-center text-2xl">
+          📡
+        </div>
+      </div>
+      <h2 class="text-base font-medium text-slate-200">Esperando transferencias por Wi-Fi</h2>
+      <p class="text-xs text-slate-400 mt-1">Servicio anunciado en la red local vía ZeroConf (mDNS)</p>
+    </section>
+
+    <!-- Modal de Vinculación / Confirmación SAS -->
+    <section id="pairingModal" class="hidden py-6">
+      <div class="bg-slate-900/80 border border-slate-700 rounded-2xl p-6 text-center">
+        <span class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400">Solicitud de Pairing</span>
+        <h3 class="text-lg font-bold mt-2 text-slate-100">Dispositivo entrante</h3>
+        <p id="pairingDevice" class="text-xs text-indigo-400 font-mono mt-0.5 font-semibold"></p>
+
+        <p class="text-xs text-slate-400 mt-4">Comprueba que este código coincida con la pantalla de Android:</p>
+        <div id="sasCodeDisplay" class="my-4 text-4xl font-mono font-bold tracking-widest text-indigo-300 bg-slate-950/60 py-3 rounded-xl border border-indigo-500/30">
+          ------
+        </div>
+
+        <div class="flex gap-3 mt-6">
+          <button onclick="respondPairing(false)" class="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-sm font-semibold transition">
+            Rechazar
+          </button>
+          <button onclick="respondPairing(true)" class="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-semibold transition shadow-lg shadow-indigo-600/30">
+            Aceptar y Confiar
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tarjeta de Progreso de Transferencia -->
+    <section id="transferCard" class="hidden py-6">
+      <div class="bg-slate-900/60 border border-slate-700/80 rounded-2xl p-6">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h4 id="txFileName" class="text-sm font-semibold text-slate-200 truncate max-w-[240px]">archivo.dat</h4>
+            <p id="txFileSize" class="text-xs text-slate-400"></p>
+          </div>
+          <span id="txStatusBadge" class="text-xs px-2.5 py-1 rounded-md bg-indigo-500/20 text-indigo-300 font-medium">Descifrando...</span>
+        </div>
+
+        <!-- Barra de progreso -->
+        <div class="w-full bg-slate-800 rounded-full h-3 overflow-hidden">
+          <div id="txProgressBar" class="bg-indigo-500 h-full w-0 transition-all duration-150"></div>
+        </div>
+
+        <div class="flex justify-between text-xs text-slate-400 mt-3 font-mono">
+          <span id="txChunksLabel">0 / 0 chunks</span>
+          <span id="txPercentLabel">0%</span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    let activeDeviceId = null;
+    const wsUrl = `ws://${window.location.host}/ws`;
+    let ws = null;
+
+    function connectWs() {
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        document.getElementById("connBadge").className = "flex items-center gap-2 px-3 py-1 bg-emerald-500/10 text-emerald-400 rounded-full text-xs font-semibold";
+        document.getElementById("connBadge").innerHTML = '<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>En línea';
+      };
+
+      ws.onclose = () => {
+        document.getElementById("connBadge").className = "flex items-center gap-2 px-3 py-1 bg-rose-500/10 text-rose-400 rounded-full text-xs font-semibold";
+        document.getElementById("connBadge").innerHTML = '<span class="w-2 h-2 rounded-full bg-rose-400"></span>Desconectado';
+        setTimeout(connectWs, 2000);
+      };
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        handleMessage(msg);
+      };
+    }
+
+    function handleMessage(msg) {
+      if (msg.type === "PAIRING_REQUEST") {
+        activeDeviceId = msg.device_id;
+        document.getElementById("pairingDevice").innerText = msg.device_id;
+        document.getElementById("sasCodeDisplay").innerText = msg.sas_code;
+        document.getElementById("idleView").classList.add("hidden");
+        document.getElementById("pairingModal").classList.remove("hidden");
+      }
+
+      if (msg.type === "PAIRING_SUCCESS" || msg.type === "PAIRING_REJECTED") {
+        document.getElementById("pairingModal").classList.add("hidden");
+        document.getElementById("idleView").classList.remove("hidden");
+      }
+
+      if (msg.type === "TRANSFER_START") {
+        document.getElementById("idleView").classList.add("hidden");
+        document.getElementById("transferCard").classList.remove("hidden");
+        document.getElementById("txFileName").innerText = msg.file_name;
+        document.getElementById("txFileSize").innerText = (msg.file_size / (1024 * 1024)).toFixed(2) + " MB";
+        document.getElementById("txProgressBar").style.width = "0%";
+      }
+
+      if (msg.type === "TRANSFER_PROGRESS") {
+        document.getElementById("txProgressBar").style.width = msg.progress + "%";
+        document.getElementById("txPercentLabel").innerText = msg.progress + "%";
+        document.getElementById("txChunksLabel").innerText = `${msg.chunk_index} / ${msg.total_chunks} chunks`;
+      }
+
+      if (msg.type === "TRANSFER_FINISH") {
+        const badge = document.getElementById("txStatusBadge");
+        if (msg.success) {
+          badge.className = "text-xs px-2.5 py-1 rounded-md bg-emerald-500/20 text-emerald-300 font-medium";
+          badge.innerText = "Completado";
+        } else {
+          badge.className = "text-xs px-2.5 py-1 rounded-md bg-rose-500/20 text-rose-300 font-medium";
+          badge.innerText = "Error SHA-256";
+        }
+        setTimeout(() => {
+          document.getElementById("transferCard").classList.add("hidden");
+          document.getElementById("idleView").classList.remove("hidden");
+        }, 4000);
+      }
+    }
+
+    async function respondPairing(approved) {
+      if (!activeDeviceId) return;
+      await fetch("/api/v1/pair/web-decision", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_id: activeDeviceId, approved: approved })
+      });
+      document.getElementById("pairingModal").classList.add("hidden");
+      document.getElementById("idleView").classList.remove("hidden");
+    }
+
+    connectWs();
+  </script>
+</body>
+</html>
