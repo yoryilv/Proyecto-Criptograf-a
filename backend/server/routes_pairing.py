@@ -82,10 +82,10 @@ async def init_pairing(req: PairInitRequest, request: Request):
 
 @router.post("/confirm", response_model=PairConfirmResponse)
 async def confirm_pairing(req: PairConfirmRequest):
-    if req.device_id in state.trusted_devices:
-        return PairConfirmResponse(paired=True, status="trusted")
-
+    # Si no hay solicitud pendiente de vinculación
     if req.device_id not in state.pending_pairings:
+        if req.device_id in state.trusted_devices and req.confirmed:
+            return PairConfirmResponse(paired=True, status="trusted")
         raise HTTPException(
             status_code=404,
             detail="No hay vinculación pendiente para este dispositivo",
@@ -95,6 +95,7 @@ async def confirm_pairing(req: PairConfirmRequest):
         del state.pending_pairings[req.device_id]
         return PairConfirmResponse(paired=False, status="rejected")
 
+    # Si hay un pairing pendiente aprobado, sobrescribe con la clave pública recién negociada
     pending = state.pending_pairings.pop(req.device_id)
     state.trusted_devices[req.device_id] = pending["public_key_bytes"]
 
