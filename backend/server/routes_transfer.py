@@ -112,24 +112,41 @@ async def transfer_handshake(req: HandshakeReq, request: Request):
     if not tx:
         raise HTTPException(status_code=404, detail="Transferencia no encontrada")
 
-    # 1. Recuperar clave pública de identidad del cliente
+    # 1. Recuperar clave pública de identidad del cliente previamente validada
     peer_identity_bytes = state.trusted_devices.get(req.device_id)
     peer_identity_key = uncompressed_bytes_to_public_key(peer_identity_bytes)
 
-    # 2. Verificar la firma sobre la clave efímera recibida
+    # 2. Desempaquetar clave efímera y firma (r, s)
     peer_eph_pub_key = base64_to_public_key(req.ephemeral_public_key)
     peer_eph_bytes = public_key_to_uncompressed_bytes(peer_eph_pub_key)
     r, s = hex_to_rs(req.signature_r, req.signature_s)
 
+    # 3. VERIFICACIÓN CRIPTOGRÁFICA ANTI-MITM
     is_valid = verify_ephemeral_public_key(
         peer_identity_key, peer_eph_bytes, r, s
     )
+
+    print("\n" + "=" * 65)
+    print("🔒 [PASO 2: HANDSHAKE ECDHE AUTENTICADO - DEFENSA ANTI-MITM]")
+    print(f"📦 Transfer ID: {req.transfer_id}")
+    print(f"📱 Dispositivo emisor: {req.device_id}")
+    print(f"🌱 Clave Efímera Android (E_A, 65 bytes):")
+    print(f"   {peer_eph_bytes.hex()[:32]}...{peer_eph_bytes.hex()[-16:]}")
+    print(f"✍️ Firma digital ECDSA enviada sobre E_A:")
+    print(f"   r: {req.signature_r[:28]}...")
+    print(f"   s: {req.signature_s[:28]}...")
+    print(f"🔍 Ejecutando verificación: ECDSA_Verify(P_A_permanente, E_A, (r, s))")
+
     if not is_valid:
+        print("❌ RESULTADO: FIRMA INVÁLIDA. CLAVE EFÍMERA NO AUTÉNTICA. POSIBLE MITM.")
+        print("=" * 65 + "\n")
         raise HTTPException(
             status_code=401, detail="Firma de handshake inválida (posible MITM)"
         )
 
-    # 3. Generar par efímero local y firmarlo
+    print("✅ RESULTADO: FIRMA AUTÉNTICA. Probada la propiedad de la clave privada de Android.")
+
+    # 4. Generar par efímero local y firmarlo
     mac_identity_key = request.app.state.mac_identity_key
     my_eph_priv, my_eph_pub = generate_ephemeral_keypair()
     my_eph_bytes = public_key_to_uncompressed_bytes(my_eph_pub)
@@ -137,10 +154,15 @@ async def transfer_handshake(req: HandshakeReq, request: Request):
     my_r, my_s = sign_ephemeral_public_key(mac_identity_key, my_eph_pub)
     my_r_hex, my_s_hex = rs_to_hex(my_r, my_s)
 
-    # 4. Derivar clave de sesión
+    # 5. Derivar secreto compartido Z y clave simétrica de sesión K_aes
     shared_secret = compute_shared_secret(my_eph_priv, peer_eph_pub_key)
     k_aes = derive_session_key(shared_secret, my_eph_bytes, peer_eph_bytes)
     tx["session_key"] = k_aes
+
+    print(f"🤝 Secreto compartido ECDH derivado (Z, 32 bytes): {shared_secret.hex()[:24]}...")
+    print(f"🗝️ Clave simétrica de sesión K_AES (HKDF-SHA256, 256 bits):")
+    print(f"   {k_aes.hex()[:32]}... (32 bytes)")
+    print("=" * 65 + "\n")
 
     await ws_manager.broadcast(
         {"type": "HANDSHAKE_OK", "transfer_id": req.transfer_id}
@@ -205,6 +227,13 @@ async def transfer_finalize(req: FinalizeReq):
 
         # Verificar integridad SHA-256 en disco
         is_valid = verify_file_integrity(tmp_file, tx["sha256_expected"])
+
+        print("\n" + "=" * 65)
+        print("🔍 [PASO 3: VALIDACIÓN DE INTEGRIDAD EN DESTINO]")
+        print(f"📄 Archivo recibido : {tx['file_name']}")
+        print(f"🎯 SHA-256 esperado : {tx['sha256_expected']}")
+        print(f"🛡️ Verificación en disco : {'✅ SÍ (Íntegro)' if is_valid else '❌ NO (Corrupto/Alterado)'}")
+        print("=" * 65 + "\n")
 
         if is_valid:
             tmp_file.rename(final_path)

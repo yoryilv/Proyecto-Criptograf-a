@@ -57,6 +57,18 @@ async def init_pairing(req: PairInitRequest, request: Request):
     # Cálculo simétrico del código visual de 6 dígitos
     sas_code = compute_sas(mac_pub_bytes, android_pub_bytes)
 
+    # --- AUDITORÍA CRIPTOGRÁFICA: EMPAREJAMIENTO SAS ---
+    print("\n" + "=" * 65)
+    print("🛡️ [PASO 1: EMPAREJAMIENTO DE IDENTIDAD - PROTOCOLO SAS]")
+    print(f"📱 Dispositivo cliente: {req.device_id}")
+    print(f"🔑 Clave Pública Android (P_A, 65 bytes ANSI X9.62):")
+    print(f"   {android_pub_bytes.hex()[:32]}...{android_pub_bytes.hex()[-16:]}")
+    print(f"🔑 Clave Pública Mac     (P_B, 65 bytes ANSI X9.62):")
+    print(f"   {mac_pub_bytes.hex()[:32]}...{mac_pub_bytes.hex()[-16:]}")
+    print(f"🧮 Hash determinista: SHA-256(min(P_A, P_B) || max(P_A, P_B))")
+    print(f"🔢 Código SAS resultante (Out-of-Band): >> {sas_code} <<")
+    print("=" * 65 + "\n")
+
     state.pending_pairings[req.device_id] = {
         "public_key_bytes": android_pub_bytes,
         "sas_code": sas_code,
@@ -93,11 +105,14 @@ async def confirm_pairing(req: PairConfirmRequest):
 
     if not req.confirmed:
         del state.pending_pairings[req.device_id]
+        print(f"❌ Emparejamiento rechazado para: '{req.device_id}'")
         return PairConfirmResponse(paired=False, status="rejected")
 
     # Si hay un pairing pendiente aprobado, sobrescribe con la clave pública recién negociada
     pending = state.pending_pairings.pop(req.device_id)
     state.trusted_devices[req.device_id] = pending["public_key_bytes"]
+
+    print(f"✅ Dispositivo '{req.device_id}' autenticado y registrado en la lista blanca (trusted_devices).")
 
     await ws_manager.broadcast(
         {"type": "PAIRING_SUCCESS", "device_id": req.device_id}
@@ -117,12 +132,14 @@ async def web_decision(req: WebDecisionRequest):
     if req.approved:
         pending = state.pending_pairings.pop(req.device_id)
         state.trusted_devices[req.device_id] = pending["public_key_bytes"]
+        print(f"✅ Aprobado desde la interfaz web: '{req.device_id}' añadido a trusted_devices.")
         await ws_manager.broadcast(
             {"type": "PAIRING_SUCCESS", "device_id": req.device_id}
         )
         return {"status": "trusted"}
     else:
         state.pending_pairings.pop(req.device_id, None)
+        print(f"❌ Rechazado desde la interfaz web: '{req.device_id}' descartado.")
         await ws_manager.broadcast(
             {"type": "PAIRING_REJECTED", "device_id": req.device_id}
         )
