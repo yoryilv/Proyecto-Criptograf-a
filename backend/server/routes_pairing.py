@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -57,6 +58,9 @@ async def init_pairing(req: PairInitRequest, request: Request):
     # Cálculo simétrico del código visual de 6 dígitos
     sas_code = compute_sas(mac_pub_bytes, android_pub_bytes)
 
+    # Forzar que un re-emparejamiento requiera confirmación humana nuevamente
+    state.trusted_devices.pop(req.device_id, None)
+
     # --- AUDITORÍA CRIPTOGRÁFICA: EMPAREJAMIENTO SAS ---
     print("\n" + "=" * 65)
     print("🛡️ [PASO 1: EMPAREJAMIENTO DE IDENTIDAD - PROTOCOLO SAS]")
@@ -75,7 +79,7 @@ async def init_pairing(req: PairInitRequest, request: Request):
         "timestamp": req.timestamp,
     }
 
-    # Emitir evento al frontend de la Mac para desplegar el modal
+    # Emitir evento al frontend de la Mac para desplegar el modal interactivo
     await ws_manager.broadcast(
         {
             "type": "PAIRING_REQUEST",
@@ -94,31 +98,50 @@ async def init_pairing(req: PairInitRequest, request: Request):
 
 @router.post("/confirm", response_model=PairConfirmResponse)
 async def confirm_pairing(req: PairConfirmRequest):
-    # Si no hay solicitud pendiente de vinculación
+    if not req.confirmed:
+        state.pending_pairings.pop(req.device_id, None)
+        print(f"❌ Emparejamiento cancelado desde el dispositivo: '{req.device_id}'")
+        await ws_manager.broadcast(
+            {"type": "PAIRING_REJECTED", "device_id": req.device_id}
+        )
+        return PairConfirmResponse(paired=False, status="rejected")
+
+    # Si ya está verificado en la lista blanca por una acción previa
+    if req.device_id in state.trusted_devices:
+        return PairConfirmResponse(paired=True, status="trusted")
+
     if req.device_id not in state.pending_pairings:
-        if req.device_id in state.trusted_devices and req.confirmed:
-            return PairConfirmResponse(paired=True, status="trusted")
         raise HTTPException(
             status_code=404,
             detail="No hay vinculación pendiente para este dispositivo",
         )
 
-    if not req.confirmed:
-        del state.pending_pairings[req.device_id]
-        print(f"❌ Emparejamiento rechazado para: '{req.device_id}'")
-        return PairConfirmResponse(paired=False, status="rejected")
+    print(f"⏳ Dispositivo '{req.device_id}' esperando confirmación en la Web de la Mac...")
 
-    # Si hay un pairing pendiente aprobado, sobrescribe con la clave pública recién negociada
-    pending = state.pending_pairings.pop(req.device_id)
-    state.trusted_devices[req.device_id] = pending["public_key_bytes"]
+    # Bucle de espera: Retiene la petición HTTP de Android hasta que tú pulses el botón en la Mac
+    timeout_seconds = 45
+    elapsed = 0.0
+    while elapsed < timeout_seconds:
+        # 1. Aprobado desde la interfaz web (web_decision lo agregó a trusted_devices)
+        if req.device_id in state.trusted_devices:
+            print(f"✅ Confirmación humana recibida. '{req.device_id}' vinculado.")
+            return PairConfirmResponse(paired=True, status="trusted")
 
-    print(f"✅ Dispositivo '{req.device_id}' autenticado y registrado en la lista blanca (trusted_devices).")
+        # 2. Rechazado desde la interfaz web (web_decision lo eliminó de pending_pairings)
+        if req.device_id not in state.pending_pairings:
+            print(f"❌ Rechazado desde la interfaz web para '{req.device_id}'.")
+            return PairConfirmResponse(paired=False, status="rejected")
 
+        await asyncio.sleep(0.5)
+        elapsed += 0.5
+
+    # 3. Expiración de tiempo
+    state.pending_pairings.pop(req.device_id, None)
+    print(f"⏱️ Tiempo de espera agotado para emparejar '{req.device_id}'.")
     await ws_manager.broadcast(
-        {"type": "PAIRING_SUCCESS", "device_id": req.device_id}
+        {"type": "PAIRING_REJECTED", "device_id": req.device_id}
     )
-
-    return PairConfirmResponse(paired=True, status="trusted")
+    raise HTTPException(status_code=408, detail="Tiempo de espera agotado sin confirmación humana")
 
 
 @router.post("/web-decision")

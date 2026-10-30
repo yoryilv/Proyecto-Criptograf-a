@@ -1,3 +1,4 @@
+import socket
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -10,10 +11,23 @@ from server.discovery import PasaDiscovery
 from server.routes_pairing import router as pairing_router
 from server.routes_transfer import router as transfer_router
 from server.ws_manager import ws_manager
+from ble_advertiser import start_ble_beacon_in_background
 
 MAC_IDENTITY_KEY = None
 MAC_PUBLIC_KEY = None
 discovery = PasaDiscovery()
+
+
+def get_local_ip() -> str:
+    """Obtiene la dirección IPv4 activa de la Mac en la red local."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        s.close()
 
 
 @asynccontextmanager
@@ -32,7 +46,19 @@ async def lifespan(app: FastAPI):
     app.state.mac_public_key = MAC_PUBLIC_KEY
 
     print("🔐 Identidad P-256 de la Mac lista")
+
+    local_ip = get_local_ip()
+
+    # 1. Anuncio mDNS / ZeroConf (red local Wi-Fi)
     await discovery.start(port=8000)
+
+    # 2. Baliza BLE de proximidad en segundo plano (Bluetooth)
+    try:
+        start_ble_beacon_in_background(local_ip, 8000)
+    except Exception as e:
+        print(f"⚠️ No se pudo iniciar BLE Advertisement: {e}")
+
+    print(f"🚀 Pasa listo en {local_ip}:8000 (mDNS activo + BLE beacon activo)")
 
     yield
 
